@@ -1,9 +1,22 @@
 const {USER_DB, USER_COLLECTION} = require("./globals");
-const {findUser} = require("./lists");
+const {findUser, getSavings} = require("./lists");
 
 async function updateLocation(client, lat, lon, userId) {
     const collection = client.db(USER_DB).collection(USER_COLLECTION)
     return collection.updateOne({uid: userId}, {$set: {latitude: lat, longitude: lon}})
+}
+
+async function updateSavings(client, increment, uid) {
+    const collection = client.db(USER_DB).collection(USER_COLLECTION)
+    getSavings(client, uid).then(result => {
+        collection.updateOne({uid: uid}, {
+            $set: {
+                yearlySavings: Number((increment + result['savings']['yearly']).toFixed(2)),
+                monthlySavings: Number((increment + result['savings']['monthly']).toFixed(2)),
+                weeklySavings: Number((increment + result['savings']['weekly']).toFixed(2))
+            }
+        })
+    })
 }
 
 async function getLastLocation(client, userId) {
@@ -28,6 +41,8 @@ function typeValidator(types) {
     }
 }
 
+// function in km
+// 1 mi -> 1.60934 km
 function distanceToStore(lat1, lon1, lat2, lon2) {
     const p = 0.017453292519943295;    // Math.PI / 180
     const c = Math.cos;
@@ -39,6 +54,7 @@ function distanceToStore(lat1, lon1, lat2, lon2) {
 }
 
 exports.typeValidator = typeValidator
+exports.updateSavings = updateSavings
 exports.updateLocation = updateLocation
 exports.getLastLocation = getLastLocation
 exports.distanceToStore = distanceToStore

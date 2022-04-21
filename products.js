@@ -2,7 +2,8 @@ const {PRODUCTS_DB, PRODUCTS_COLLECTION, ADD_PRODUCT_LIST, REMOVE_PRODUCT_LIST} 
 const {ObjectId} = require("mongodb");
 const {listManagement, getPreviousListPrice} = require("./lists.js");
 const {distanceToStore, getLastLocation} = require("./home");
-const PRODUCT_INCREMENT = 200
+const {findUser} = require("./lists");
+const PRODUCT_INCREMENT = 10
 const PRODUCT_MAX = 1000
 const INCREMENT_MAX = (PRODUCT_MAX / PRODUCT_INCREMENT) - 1
 
@@ -12,6 +13,34 @@ async function loadAllProducts(client) {
     let results = cursor.toArray()
     console.log(results)
     return results
+}
+
+async function getAverageOfUpc(client, upc) {
+    return findUpcProductsArray(client, upc).then(async results => {
+        let total = 0
+        let count = 0
+        for (let item in await results) {
+            total += results[item]['price']
+            count++
+        }
+        return total / count
+    })
+}
+
+async function findUpcProductsArray(client, upc) {
+    const collection = client.db(PRODUCTS_DB).collection(PRODUCTS_COLLECTION)
+    let cursor = await collection.find({upc_code: upc})
+    return cursor.toArray()
+}
+
+async function updateProductPrice(client, upc, price) {
+    client.db(PRODUCTS_DB).collection(PRODUCTS_COLLECTION).updateOne(
+        {upc_code: upc},
+        {$set: {price: price}},
+        {upsert: false}
+    ).then(result => {
+        return result
+    })
 }
 
 function pageOfProducts(page, arr) {
@@ -48,6 +77,7 @@ async function addProduct(client, body) {
 async function addProductToList(client, user_id, listIdx, productId) {
     if (validListProduct(user_id, listIdx, productId)) {
         let product = await searchProductById(client, productId)
+        product['purchased'] = false
         if (product === null) throw new Error("Product DNE")
         return await getPreviousListPrice(client, user_id, listIdx).then((price) => listManagement(client, user_id, ADD_PRODUCT_LIST, {
             idx: listIdx,
@@ -82,6 +112,7 @@ async function searchProductById(client, productId) {
 
 async function queryProduct(client, query) {
     const builder = {}
+    let dist_obj = {distance: 0}
     if (query.hasOwnProperty("name")) builder.name = {$regex: query.name}
     if (query.hasOwnProperty("price")) builder.price = parseFloat(query.price)
     if (query.hasOwnProperty("store")) builder["store.name"] = {$regex: query.store}
@@ -98,6 +129,17 @@ async function queryProduct(client, query) {
         }
         if (parseInt(query['order']) === 1) result_arr = await result_arr.reverse()
     }
+
+    await findUser(client, query['uid']).then(user => {
+        console.log(user)
+        if (typeof user['latitude'] !== null && typeof user['longitude'] !== null) {
+            for (let i = 0; i < result_arr.length; i++) {
+                const store = result_arr[i]['store']
+                result_arr[i]['distance'] = distanceToStore(store['latitude'], store['longitude'], user['latitude'], user['longitude'])
+            }
+        }
+    })
+
     const total_results = result_arr.length
     let lower_bound = 0
     let upper_bound = PRODUCT_INCREMENT
@@ -115,7 +157,7 @@ async function queryProduct(client, query) {
         total: total_results,
         lower_bound: lower_bound,
         upper_bound: upper_bound,
-        page_size: result_arr.length
+        page_size: result_arr.length,
     }
 }
 
@@ -147,10 +189,14 @@ function sortProductArrayByColumn(array, field, user) {
         }
         case "location" : {
             array.sort((a, b) => {
+                console.log("running")
                 const a_store = a['store']
                 const b_store = b['store']
-                return distanceToStore(a_store.latitude, a_store.longitude, user.latitude, user.longitude) -
-                    distanceToStore(b_store.latitude, b_store.longitude, user.latitude, user.longitude)
+                const miToKm = .621371
+                a['distance'] = Number((distanceToStore(a_store.latitude, a_store.longitude, user.latitude, user.longitude) * miToKm).toFixed(2))
+                b['distance'] = Number((distanceToStore(b_store.latitude, b_store.longitude, user.latitude, user.longitude) * miToKm).toFixed(2))
+                return a['distance'] -
+                    b['distance']
             })
         }
     }
@@ -162,12 +208,14 @@ function validListProduct(user_id, listIdx, productId) {
 }
 
 function validProduct(body) {
-    return (typeof (body['name']) == "string" && typeof (body['productId']) == "number" && typeof (body['upc_code']) == "number" && typeof (body['price']) == "number"
+    return (typeof (body['name']) == "string" && typeof (body['productId']) == "number" && (typeof (body['upc_code']) == "string" || typeof (body['upc_code']) == "number") && typeof (body['price']) == "number"
         && typeof (body['image_url']) == "string" && typeof (body['weight']) == "string"
         && typeof (body['store']) == "object" && typeof (body['store']['name']) == "string" && typeof (body['store']['latitude']) == "number" && typeof (body['store']['longitude']) == "number")
 }
 
 exports.productSuggestByName = productSuggestByName
+exports.findUpcProductsArray = findUpcProductsArray
+exports.getAverageOfUpc = getAverageOfUpc
 exports.searchProductById = searchProductById
 exports.loadAllProducts = loadAllProducts
 exports.pageOfProducts = pageOfProducts
@@ -175,3 +223,5 @@ exports.addProduct = addProduct
 exports.queryProduct = queryProduct
 exports.addProductToList = addProductToList
 exports.removeProductFromList = removeProductFromList
+exports.sortProductArrayByColumn = sortProductArrayByColumn
+exports.updateProductPrice = updateProductPrice

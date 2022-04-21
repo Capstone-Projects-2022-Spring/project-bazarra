@@ -8,7 +8,7 @@ const {
     USER_DB,
     USER_COLLECTION,
     ADD_PRODUCT_LIST,
-    REMOVE_PRODUCT_LIST, UPDATE_LIST_NAME
+    REMOVE_PRODUCT_LIST, UPDATE_LIST_NAME, LIST_PRODUCT_SELECTED
 } = require("./globals");
 
 const {ObjectId} = require("mongodb")
@@ -98,7 +98,7 @@ async function listManagement(client, user_id, type, req) {
                 $push: {
                     [`listCollection.${req.idx}.products`]: req.body
                 },
-                $set: {[`listCollection.${req.idx}.savings`]: req.originalSavings + req.body.price}
+                $set: {[`listCollection.${req.idx}.savings`]: Number((req.originalSavings + req.body.price).toFixed(2))}
             }
             break
         }
@@ -106,10 +106,15 @@ async function listManagement(client, user_id, type, req) {
             body.document = {$pull: {listCollection: {id: req.listId}}}
             break
         }
+        case LIST_PRODUCT_SELECTED : {
+            body.query = {uid: user_id, [`listCollection.${req.idx}.products._id`]: ObjectId(req['product'])}
+            body.document = {$set: {[`listCollection.${req.idx}.products.$.purchased`]: true}}
+            break
+        }
         case REMOVE_PRODUCT_LIST: {
             body.document = {
                 $pull: {[`listCollection.${req.idx}.products`]: {_id: ObjectId(req.productId)}},
-                $set: {[`listCollection.${req.idx}.savings`]: req.originalSavings - req.productPrice}
+                $set: {[`listCollection.${req.idx}.savings`]: Number((req.originalSavings - req.productPrice).toFixed(2))}
             }
             break
         }
@@ -122,7 +127,8 @@ async function listManagement(client, user_id, type, req) {
         body.document,
         body.options
     ).then(result => {
-        // console.log(result)
+        console.log(result)
+
         return result
     })
 }

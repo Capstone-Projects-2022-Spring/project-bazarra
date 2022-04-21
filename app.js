@@ -17,11 +17,13 @@ const {
     loadAllProducts,
     pageOfProducts,
     addProduct,
-    queryProduct, addProductToList, removeProductFromList
+    queryProduct, addProductToList, removeProductFromList, getAverageOfUpc, findUpcProductsArray,
+    sortProductArrayByColumn, updateProductPrice
 } = require('./products')
-const {ADD_LIST, REMOVE_LIST, UPDATE_LIST, UPDATE_LIST_NAME} = require('./globals')
-const {typeValidator, updateLocation} = require("./home");
+const {ADD_LIST, REMOVE_LIST, UPDATE_LIST, UPDATE_LIST_NAME, LIST_PRODUCT_SELECTED} = require('./globals')
+const {typeValidator, updateLocation, updateSavings} = require("./home");
 const {getSavings} = require("./lists");
+const bodyParser = require("express");
 
 const port = process.env.PORT
 const uri = process.env.MONGODB;
@@ -30,9 +32,10 @@ const app = express()
 const client = new MongoClient(uri)
 
 app.use(express.static('public'))
-app.use(express.json())
 cors({credentials: true, origin: true})
 app.use(cors())
+app.use(express.json()) // for parsing application/json
+app.use(express.urlencoded({extended: true})) // for parsing application/x-www-form-urlencoded
 
 // ------ INITIALIZATION ------
 let products = []
@@ -51,10 +54,9 @@ app.listen(port, async () => {
 // ------ USER -------
 app.use((req, res, next) => {
     const idToken = req.headers['authorization']
-    if (idToken === "bazaara-integration-test"){
+    if (idToken === "bazaara-integration-test") {
         next()
-    }
-    else {
+    } else {
         try {
             let checkRevoked = true;
             // comments left for local debugging
@@ -165,22 +167,53 @@ app.post('/lists/update/:uid/listIndex/:idx/label', (req, res, next) => {
         const uid = req.params['uid']
         const idx = req.params['idx']
         const body = req.body
+        console.log(typeof uid)
+        console.log(typeof idx)
+        console.log(typeof body['label'])
+        listManagement(client, uid, UPDATE_LIST_NAME, {idx: idx, label: body['label']}).then(result => {
+            console.log(result)
+            if (result['matchedCount'] === 0) {
+                res.send({status: 404, message: `list ${idx} for user ${uid} could not be found`})
+            } else {
+                res.send({status: 200, message: `list name changed to: ${body['label']}`})
+            }
+        }).catch(next)
 
-        if ((typeValidator({"number": [idx], "string": [uid, body['label']]}))) {
-            listManagement(client, uid, UPDATE_LIST_NAME, {idx: idx, label: body['label']}).then(result => {
-                console.log(result)
-                if (result['matchedCount'] === 0) {
-                    res.send({status: 404, message: `list ${idx} for user ${uid} could not be found`})
-                } else {
-                    res.send({status: 200, message: `list name changed to: ${body['label']}`})
-                }
-            }).catch(next)
-        } else {
-            next({status: 400, message: "invalid request body types"})
-        }
     } catch (e) {
         next({status: 404, message: "invalid request, could not be found"})
     }
+})
+
+/**
+ * grab all with upc code
+ * calculate average price
+ * weekly, monthly, yearly
+ * weekly savings
+ */
+app.post('/lists/update/:uid/listIndex/:idx/selected', (req, res, next) => {
+    const body = req['body']
+    const uid = req.params['uid']
+    const idx = req.params['idx']
+    const productId = body['productId']
+    searchProductById(client, productId).then(async result => {
+        const res_price = result['price']
+        return getAverageOfUpc(client, result['upc_code']).then(average => {
+            return (res_price < average) ? average - res_price : 0
+        })
+    }).then(async savings => {
+        updateSavings(client, savings, uid).catch(e => console.log(e))
+    })
+    listManagement(client, uid, LIST_PRODUCT_SELECTED, {idx: idx, product: productId}).then(result => {
+        console.log(`matchedCount: ${result['matchedCount'] === 0}`)
+        if (result['matchedCount'] === 0) {
+            res.send({
+                status: 404,
+                message: `product ${productId}, for list ${idx}, for user ${uid} could not be found`
+            })
+        } else {
+            res.send({status: 200, message: "Thank you for saving with Bazaara"})
+        }
+    }).catch(next)
 })
 
 app.post('/lists/update/:uid/listIndex/:idx', (async (req, res, next) => {
@@ -317,7 +350,10 @@ app.get('/products/search', (async (req, res, next) => {
             upper: result['upper_bound'],
             page_size: result['page_size'],
         })
-    }).catch(next)
+    }).catch(e => {
+        console.log(e)
+        next()
+    })
 }))
 
 app.post('/products/add', async (req, res, next) => {
@@ -328,9 +364,16 @@ app.post('/products/add', async (req, res, next) => {
 
 app.post('/products/barcode/add', (req, res, next) => {
     const body = req['body']
-    const upc = body['upc_code']
-    const price = body['price']
+    const upc = String(body['upc_code'])
+    const price = Number(body['price'])
     if (typeValidator({"number": [price]})) {
+        findUpcProductsArray(client, upc).then(arr => {
+            if (arr.length === 1) {
+                updateProductPrice(client, upc, price).then(result => {
+                    console.log(result)
+                })
+            }
+        }).catch(next)
         res.send({status: 200, message: "Thank you for contributing to our dataset!!"})
     } else {
         next({status: 400, message: "invalid request body"})
@@ -343,17 +386,13 @@ app.post('/user/:uid/location', (req, res, next) => {
     const lat = body['latitude']
     const lon = body['longitude']
     const userId = req.params['uid']
-    if (typeValidator({"number": [lat, lon], "string": [userId]})) {
-        updateLocation(client, lat, lon, userId).then((result) => {
-            if (result['matchedCount'] === 0) {
-                res.send({status: 404, message: "no user with uid found"})
-            } else {
-                res.send({status: 200, message: "user location updated"})
-            }
-        }).catch(next)
-    } else {
-        res.send({status: 400, message: "invalid request body"})
-    }
+    updateLocation(client, lat, lon, userId).then((result) => {
+        if (result['matchedCount'] === 0) {
+            res.send({status: 404, message: "no user with uid found"})
+        } else {
+            res.send({status: 200, message: "user location updated"})
+        }
+    }).catch(next)
 })
 
 app.get('/user/:uid/savings', (req, res, next) => {
